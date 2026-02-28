@@ -9,6 +9,6 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -pipe")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -pipe -DNDEBUG")
 
 add_executable(code code.cpp)
