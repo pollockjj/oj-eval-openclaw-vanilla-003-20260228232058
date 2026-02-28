@@ -51,10 +51,10 @@ struct KeyComp {
 
 using RankTree = tree<Key, null_type, KeyComp, rb_tree_tag, tree_order_statistics_node_update>;
 
-static int status_to_id(const string &s) {
-    if (s == "Accepted") return 0;
-    if (s == "Wrong_Answer") return 1;
-    if (s == "Runtime_Error") return 2;
+static inline int status_to_id(const string &s) {
+    if (s[0] == 'A') return 0;
+    if (s[0] == 'W') return 1;
+    if (s[0] == 'R') return 2;
     return 3;
 }
 
@@ -67,7 +67,7 @@ int main() {
     unordered_map<string, int> id_of;
     id_of.reserve(20000);
 
-    vector<int> lex_rank; // tid -> lexicographic rank among team names
+    vector<int> lex_rank;
 
     bool started = false, frozen = false;
     int m = 0;
@@ -77,25 +77,21 @@ int main() {
 
     vector<Metric> metrics;
     vector<Key> cur_key;
+    vector<int> rank_of_team;
     RankTree rank_tree, frozen_tree;
 
     auto visible_hidden = [&](int tid, int p) {
         return frozen && ((teams[tid].frozen_mask >> p) & 1U);
     };
 
-    auto calc_metric = [&](int tid) {
-        Metric mt;
-        for (int p = 0; p < m; ++p) {
-            if (visible_hidden(tid, p)) continue;
-            const auto &ps = teams[tid].prob[p];
-            if (ps.solved) {
-                mt.solved++;
-                mt.penalty += 20LL * ps.wrong + ps.solve_time;
-                mt.desc_times[mt.tcnt++] = ps.solve_time;
-            }
+    auto insert_solve_time = [&](Metric &mt, int t) {
+        int i = mt.tcnt;
+        while (i > 0 && mt.desc_times[i - 1] < t) {
+            mt.desc_times[i] = mt.desc_times[i - 1];
+            --i;
         }
-        sort(mt.desc_times.begin(), mt.desc_times.begin() + mt.tcnt, greater<int>());
-        return mt;
+        mt.desc_times[i] = t;
+        mt.tcnt++;
     };
 
     auto make_key = [&](int tid) {
@@ -109,18 +105,26 @@ int main() {
         return k;
     };
 
+    auto refresh_rank_array = [&]() {
+        int n = (int)teams.size();
+        if ((int)rank_of_team.size() != n) rank_of_team.assign(n, 0);
+        int rk = 1;
+        for (auto it = rank_tree.begin(); it != rank_tree.end(); ++it, ++rk) {
+            rank_of_team[it->tid] = rk;
+        }
+    };
+
     auto rebuild_ranking = [&]() {
         rank_tree.clear();
         frozen_tree.clear();
         int n = (int)teams.size();
-        if ((int)metrics.size() != n) metrics.resize(n);
         if ((int)cur_key.size() != n) cur_key.resize(n);
         for (int i = 0; i < n; ++i) {
-            metrics[i] = calc_metric(i);
             cur_key[i] = make_key(i);
             rank_tree.insert(cur_key[i]);
             if (teams[i].frozen_mask) frozen_tree.insert(cur_key[i]);
         }
+        refresh_rank_array();
     };
 
     auto print_problem_cell = [&](int tid, int p) {
@@ -154,23 +158,16 @@ int main() {
     };
 
     auto ranking_of = [&](int tid) {
-        return (int)rank_tree.order_of_key(cur_key[tid]) + 1;
+        return rank_of_team[tid];
     };
 
-    string line;
-    while (getline(cin, line)) {
-        if (line.empty()) continue;
-        stringstream ss(line);
-        string cmd;
-        ss >> cmd;
-
+    string cmd;
+    while (cin >> cmd) {
         if (cmd == "ADDTEAM") {
-            string tname; ss >> tname;
-            if (started) {
-                cout << "[Error]Add failed: competition has started.\n";
-            } else if (id_of.count(tname)) {
-                cout << "[Error]Add failed: duplicated team name.\n";
-            } else {
+            string tname; cin >> tname;
+            if (started) cout << "[Error]Add failed: competition has started.\n";
+            else if (id_of.count(tname)) cout << "[Error]Add failed: duplicated team name.\n";
+            else {
                 int tid = (int)teams.size();
                 teams.push_back(Team{});
                 teams.back().name = tname;
@@ -178,9 +175,8 @@ int main() {
                 cout << "[Info]Add successfully.\n";
             }
         } else if (cmd == "START") {
-            string tmp; int duration, pcnt;
-            ss >> tmp >> duration >> tmp >> pcnt;
-            (void)duration;
+            string t1, t2; int duration, pcnt;
+            cin >> t1 >> duration >> t2 >> pcnt;
             if (started) {
                 cout << "[Error]Start failed: competition has started.\n";
                 continue;
@@ -206,34 +202,37 @@ int main() {
 
             metrics.assign(n, Metric{});
             cur_key.assign(n, Key{});
-
-            // Before first FLUSH, ranking is by lexicographic team name.
             rank_tree.clear();
             frozen_tree.clear();
             for (int i = 0; i < n; ++i) {
                 cur_key[i] = Key{i, lex_rank[i], 0, 0, {}, 0};
                 rank_tree.insert(cur_key[i]);
             }
+            refresh_rank_array();
 
             cout << "[Info]Competition starts.\n";
         } else if (cmd == "SUBMIT") {
             char pname; string by_word, tname, with_word, st, at_word; int tim;
-            ss >> pname >> by_word >> tname >> with_word >> st >> at_word >> tim;
-            int p = pname - 'A';
-            int s = status_to_id(st);
-            int tid = id_of[tname];
+            cin >> pname >> by_word >> tname >> with_word >> st >> at_word >> tim;
+            int p = pname - 'A', s = status_to_id(st), tid = id_of[tname];
 
             all_subs.push_back({p, s, tim});
             int idx = (int)all_subs.size() - 1;
-            int ps[2] = {p, Team::P_ALL};
-            int ssid[2] = {s, Team::S_ALL};
-            for (int pi : ps) for (int si : ssid) teams[tid].last_idx[pi][si] = idx;
+            teams[tid].last_idx[p][s] = idx;
+            teams[tid].last_idx[p][Team::S_ALL] = idx;
+            teams[tid].last_idx[Team::P_ALL][s] = idx;
+            teams[tid].last_idx[Team::P_ALL][Team::S_ALL] = idx;
 
             auto &state = teams[tid].prob[p];
             if (!state.solved) {
                 if (s == 0) {
                     state.solved = true;
                     state.solve_time = tim;
+                    if (!frozen) {
+                        metrics[tid].solved++;
+                        metrics[tid].penalty += 20LL * state.wrong + tim;
+                        insert_solve_time(metrics[tid], tim);
+                    }
                 } else {
                     state.wrong++;
                 }
@@ -269,11 +268,11 @@ int main() {
             }
             cout << "[Info]Scroll scoreboard.\n";
 
-            rebuild_ranking(); // flush first under frozen visibility
+            rebuild_ranking();
             print_scoreboard();
 
             while (!frozen_tree.empty()) {
-                int tid = prev(frozen_tree.end())->tid; // lowest ranked with frozen problems
+                int tid = prev(frozen_tree.end())->tid;
                 int prob = __builtin_ctz(teams[tid].frozen_mask);
 
                 Key oldk = cur_key[tid];
@@ -283,7 +282,12 @@ int main() {
                 frozen_tree.erase(oldk);
 
                 teams[tid].frozen_mask &= ~(1U << prob);
-                metrics[tid] = calc_metric(tid);
+                const auto &ps = teams[tid].prob[prob];
+                if (ps.solved) {
+                    metrics[tid].solved++;
+                    metrics[tid].penalty += 20LL * ps.wrong + ps.solve_time;
+                    insert_solve_time(metrics[tid], ps.solve_time);
+                }
                 Key newk = make_key(tid);
 
                 int new_pos = (int)rank_tree.order_of_key(newk) + 1;
@@ -303,8 +307,9 @@ int main() {
             frozen = false;
             for (auto &t : teams) t.frozen_mask = 0;
             frozen_tree.clear();
+            refresh_rank_array();
         } else if (cmd == "QUERY_RANKING") {
-            string tname; ss >> tname;
+            string tname; cin >> tname;
             if (!id_of.count(tname)) {
                 cout << "[Error]Query ranking failed: cannot find the team.\n";
                 continue;
@@ -316,9 +321,8 @@ int main() {
             int tid = id_of[tname];
             cout << tname << " NOW AT RANKING " << ranking_of(tid) << '\n';
         } else if (cmd == "QUERY_SUBMISSION") {
-            string tname; ss >> tname;
-            string where_word, prob_field, and_word, status_field;
-            ss >> where_word >> prob_field >> and_word >> status_field;
+            string tname, where_word, prob_field, and_word, status_field;
+            cin >> tname >> where_word >> prob_field >> and_word >> status_field;
 
             if (!id_of.count(tname)) {
                 cout << "[Error]Query submission failed: cannot find the team.\n";
