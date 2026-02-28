@@ -28,28 +28,24 @@ struct Metric {
     int tcnt = 0;
 };
 
-struct Key {
-    int tid = -1;
-    int lex = -1;
-    int solved = 0;
-    long long penalty = 0;
-    array<int, 26> desc_times{};
-    int tcnt = 0;
-};
+static const vector<Metric> *G_MET = nullptr;
+static const vector<int> *G_LEX = nullptr;
 
-struct KeyComp {
-    bool operator()(const Key &a, const Key &b) const {
-        if (a.solved != b.solved) return a.solved > b.solved;
-        if (a.penalty != b.penalty) return a.penalty < b.penalty;
-        for (int i = 0; i < a.tcnt; ++i) {
-            if (a.desc_times[i] != b.desc_times[i]) return a.desc_times[i] < b.desc_times[i];
+struct TeamComp {
+    bool operator()(int a, int b) const {
+        if (a == b) return false;
+        const Metric &A = (*G_MET)[a], &B = (*G_MET)[b];
+        if (A.solved != B.solved) return A.solved > B.solved;
+        if (A.penalty != B.penalty) return A.penalty < B.penalty;
+        for (int i = 0; i < A.tcnt; ++i) {
+            if (A.desc_times[i] != B.desc_times[i]) return A.desc_times[i] < B.desc_times[i];
         }
-        if (a.lex != b.lex) return a.lex < b.lex;
-        return a.tid < b.tid;
+        if ((*G_LEX)[a] != (*G_LEX)[b]) return (*G_LEX)[a] < (*G_LEX)[b];
+        return a < b;
     }
 };
 
-using RankTree = tree<Key, null_type, KeyComp, rb_tree_tag, tree_order_statistics_node_update>;
+using RankTree = tree<int, null_type, TeamComp, rb_tree_tag, tree_order_statistics_node_update>;
 
 static inline int status_to_id(const string &s) {
     if (s[0] == 'A') return 0;
@@ -68,6 +64,11 @@ int main() {
     id_of.reserve(20000);
 
     vector<int> lex_rank;
+    vector<int> rank_of_team;
+    vector<Metric> metrics;
+
+    G_MET = &metrics;
+    G_LEX = &lex_rank;
 
     bool started = false, frozen = false;
     int m = 0;
@@ -75,14 +76,7 @@ int main() {
     vector<Submission> all_subs;
     all_subs.reserve(300000);
 
-    vector<Metric> metrics;
-    vector<Key> cur_key;
-    vector<int> rank_of_team;
     RankTree rank_tree, frozen_tree;
-
-    auto visible_hidden = [&](int tid, int p) {
-        return frozen && ((teams[tid].frozen_mask >> p) & 1U);
-    };
 
     auto insert_solve_time = [&](Metric &mt, int t) {
         int i = mt.tcnt;
@@ -94,23 +88,12 @@ int main() {
         mt.tcnt++;
     };
 
-    auto make_key = [&](int tid) {
-        Key k;
-        k.tid = tid;
-        k.lex = lex_rank[tid];
-        k.solved = metrics[tid].solved;
-        k.penalty = metrics[tid].penalty;
-        k.tcnt = metrics[tid].tcnt;
-        k.desc_times = metrics[tid].desc_times;
-        return k;
-    };
-
     auto refresh_rank_array = [&]() {
         int n = (int)teams.size();
         if ((int)rank_of_team.size() != n) rank_of_team.assign(n, 0);
         int rk = 1;
         for (auto it = rank_tree.begin(); it != rank_tree.end(); ++it, ++rk) {
-            rank_of_team[it->tid] = rk;
+            rank_of_team[*it] = rk;
         }
     };
 
@@ -118,13 +101,15 @@ int main() {
         rank_tree.clear();
         frozen_tree.clear();
         int n = (int)teams.size();
-        if ((int)cur_key.size() != n) cur_key.resize(n);
         for (int i = 0; i < n; ++i) {
-            cur_key[i] = make_key(i);
-            rank_tree.insert(cur_key[i]);
-            if (teams[i].frozen_mask) frozen_tree.insert(cur_key[i]);
+            rank_tree.insert(i);
+            if (teams[i].frozen_mask) frozen_tree.insert(i);
         }
         refresh_rank_array();
+    };
+
+    auto visible_hidden = [&](int tid, int p) {
+        return frozen && ((teams[tid].frozen_mask >> p) & 1U);
     };
 
     auto print_problem_cell = [&](int tid, int p) {
@@ -147,7 +132,7 @@ int main() {
     auto print_scoreboard = [&]() {
         int rk = 1;
         for (auto it = rank_tree.begin(); it != rank_tree.end(); ++it, ++rk) {
-            int tid = it->tid;
+            int tid = *it;
             cout << teams[tid].name << ' ' << rk << ' ' << metrics[tid].solved << ' ' << metrics[tid].penalty;
             for (int p = 0; p < m; ++p) {
                 cout << ' ';
@@ -155,10 +140,6 @@ int main() {
             }
             cout << '\n';
         }
-    };
-
-    auto ranking_of = [&](int tid) {
-        return rank_of_team[tid];
     };
 
     string cmd;
@@ -201,13 +182,9 @@ int main() {
             }
 
             metrics.assign(n, Metric{});
-            cur_key.assign(n, Key{});
             rank_tree.clear();
             frozen_tree.clear();
-            for (int i = 0; i < n; ++i) {
-                cur_key[i] = Key{i, lex_rank[i], 0, 0, {}, 0};
-                rank_tree.insert(cur_key[i]);
-            }
+            for (int tid = 0; tid < n; ++tid) rank_tree.insert(tid);
             refresh_rank_array();
 
             cout << "[Info]Competition starts.\n";
@@ -268,18 +245,16 @@ int main() {
             }
             cout << "[Info]Scroll scoreboard.\n";
 
-            rebuild_ranking();
+            rebuild_ranking(); // implicit flush in frozen mode
             print_scoreboard();
 
             while (!frozen_tree.empty()) {
-                int tid = prev(frozen_tree.end())->tid;
+                int tid = *prev(frozen_tree.end()); // lowest-ranked with frozen problem(s)
                 int prob = __builtin_ctz(teams[tid].frozen_mask);
 
-                Key oldk = cur_key[tid];
-                int old_pos = (int)rank_tree.order_of_key(oldk) + 1;
-
-                rank_tree.erase(oldk);
-                frozen_tree.erase(oldk);
+                int old_pos = (int)rank_tree.order_of_key(tid) + 1;
+                rank_tree.erase(tid);
+                frozen_tree.erase(tid);
 
                 teams[tid].frozen_mask &= ~(1U << prob);
                 const auto &ps = teams[tid].prob[prob];
@@ -288,18 +263,16 @@ int main() {
                     metrics[tid].penalty += 20LL * ps.wrong + ps.solve_time;
                     insert_solve_time(metrics[tid], ps.solve_time);
                 }
-                Key newk = make_key(tid);
 
-                int new_pos = (int)rank_tree.order_of_key(newk) + 1;
+                int new_pos = (int)rank_tree.order_of_key(tid) + 1;
                 if (new_pos < old_pos) {
-                    int team2 = rank_tree.find_by_order(new_pos - 1)->tid;
+                    int team2 = *rank_tree.find_by_order(new_pos - 1);
                     cout << teams[tid].name << ' ' << teams[team2].name << ' '
                          << metrics[tid].solved << ' ' << metrics[tid].penalty << '\n';
                 }
 
-                rank_tree.insert(newk);
-                cur_key[tid] = newk;
-                if (teams[tid].frozen_mask) frozen_tree.insert(newk);
+                rank_tree.insert(tid);
+                if (teams[tid].frozen_mask) frozen_tree.insert(tid);
             }
 
             print_scoreboard();
@@ -319,7 +292,7 @@ int main() {
                 cout << "[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.\n";
             }
             int tid = id_of[tname];
-            cout << tname << " NOW AT RANKING " << ranking_of(tid) << '\n';
+            cout << tname << " NOW AT RANKING " << rank_of_team[tid] << '\n';
         } else if (cmd == "QUERY_SUBMISSION") {
             string tname, where_word, prob_field, and_word, status_field;
             cin >> tname >> where_word >> prob_field >> and_word >> status_field;
