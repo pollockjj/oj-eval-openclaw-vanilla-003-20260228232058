@@ -248,12 +248,17 @@ int main() {
             rebuild_ranking(); // implicit flush in frozen mode
             print_scoreboard();
 
+            TeamComp comp;
             while (!frozen_tree.empty()) {
                 int tid = *prev(frozen_tree.end()); // lowest-ranked with frozen problem(s)
                 int prob = __builtin_ctz(teams[tid].frozen_mask);
 
-                int old_pos = (int)rank_tree.order_of_key(tid) + 1;
-                rank_tree.erase(tid);
+                auto it_old = rank_tree.find(tid);
+                bool had_prev = (it_old != rank_tree.begin());
+                int prev_team = -1;
+                if (had_prev) prev_team = *prev(it_old);
+
+                rank_tree.erase(it_old);
                 frozen_tree.erase(tid);
 
                 teams[tid].frozen_mask &= ~(1U << prob);
@@ -264,9 +269,9 @@ int main() {
                     insert_solve_time(metrics[tid], ps.solve_time);
                 }
 
-                int new_pos = (int)rank_tree.order_of_key(tid) + 1;
-                if (new_pos < old_pos) {
-                    int team2 = *rank_tree.find_by_order(new_pos - 1);
+                auto it_pos = rank_tree.lower_bound(tid);
+                if (had_prev && comp(tid, prev_team)) {
+                    int team2 = *it_pos;
                     cout << teams[tid].name << ' ' << teams[team2].name << ' '
                          << metrics[tid].solved << ' ' << metrics[tid].penalty << '\n';
                 }
